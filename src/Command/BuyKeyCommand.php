@@ -2,7 +2,10 @@
 
 namespace App\Command;
 
+use RuntimeException;
 use App\Service\G2aClient;
+use App\Service\InventoryFactory;
+use Exception;
 use Symfony\Component\Console\Command\Command;
 use G2A\IntegrationApi\Request\OrderAddRequest;
 use G2A\IntegrationApi\Request\OrderKeyRequest;
@@ -50,91 +53,61 @@ class BuyKeyCommand extends Command
         $currency = $input->getOption('currency');
         $maxPrice = $input->getOption('maxprice');
 
-        if ($inventory === null) {
-            $io->error('Opcja inventory jest wymagana');
+        $keys = [];
+        try {
+            $inventoryClient = InventoryFactory::create($inventory);
+            $inventoryClient->buyKeys($product, $qty, $currency, $maxPrice, $keys);
+        } catch (ValidatorException $e) {
+            $errors[] = 'Bad request: ' . $e->getMessage();
+        } catch (BadResponseException $e) {
+            $errors[] = 'API error: ' . $e->getResponse()->getMessage() . ' (' . $e->getResponse()->getCode() . ')';
+        } catch (IntegrationApiException $e) {
+            $errors[] = 'Error: ' . $e->getMessage();
+        }
+        if (!empty($keys))
+            $io->info($keys);
+        if (!empty($errors)) {
+            $io->error($errors);
             return Command::FAILURE;
+        }
+        return Command::SUCCESS;
+    }
+
+
+    protected function interact(InputInterface $input, OutputInterface $output)
+    {
+        $io = new SymfonyStyle($input, $output);
+
+        $inventory = $input->getOption('inventory');
+        $product = $input->getOption('product');
+        $qty = $input->getOption('qty');
+        $currency = $input->getOption('currency');
+        $maxPrice = $input->getOption('maxprice');
+
+        $errors = [];
+
+        if ($inventory === null) {
+            $errors[] = 'Opcja inventory jest wymagana';
         }
         if ($product === null) {
-            $io->error('Opcja product jest wymagana');
-            return Command::FAILURE;
+            $errors[] = 'Opcja product jest wymagana';
         }
         if ($qty === null) {
-            $io->error('Opcja qty jest wymagana');
-            return Command::FAILURE;
+            $errors[] = 'Opcja qty jest wymagana';
+        } else if (filter_var($qty, FILTER_VALIDATE_INT) === false || $qty < 1) {
+            $errors[] = 'Opcja qty (ilość kluczy) musi być liczbą całkowitą większą od 0';
         }
         if ($currency === null) {
-            $io->error('Opcja currency jest wymagana');
-            return Command::FAILURE;
+            $errors[] = 'Opcja currency jest wymagana';
         }
         if ($maxPrice === null) {
-            $io->error('Opcja maxprice jest wymagana');
-            return Command::FAILURE;
+            $errors[] = 'Opcja maxprice jest wymagana';
+        } else if (!is_numeric($maxPrice) || (float)$maxPrice < 1) {
+            $errors[] = 'Maxprice musi być liczbą większą od 0';
         }
 
-        switch ($inventory) {
-            case 'g2a':
-                for ($i = 0; $i < $qty; $i++) {
-                    try {
-                        $g2aClient = G2aClient::create(
-                            $_ENV['G2A_EMAIL'],
-                            $_ENV['ENV_DOMAIN'],
-                            $_ENV['CLIENT_ID'],
-                            $_ENV['CLIENT_SECRET']
-                        );
-
-                        $request = new OrderAddRequest($g2aClient);
-                        $request
-                            ->setProductId($product)
-                            ->setCurrency($currency)
-                            ->setMaxPrice(intval($maxPrice))
-                            ->call()
-                        ;
-
-                        $addOrderResponse = $request->getResponse();
-
-                        $request = new OrderPaymentRequest($g2aClient);
-                        $request
-                            ->setOrderId($addOrderResponse->getOrderId())
-                            ->call()
-                        ;
-
-                        $payOrderResponse = $request->getResponse();
-
-                        do {
-                            $request = new OrderDetailsRequest($g2aClient);
-                            $request
-                                ->setOrderId($addOrderResponse->getOrderId())
-                                ->call();
-
-                            $orderDetailsResponse = $request->getResponse();
-                            $status = $orderDetailsResponse->getStatus();
-                        } while (
-                            $status != 'complete'
-                        );
-
-                        $request = new OrderKeyRequest($g2aClient);
-                        $request
-                            ->setOrderId($addOrderResponse->getOrderId())
-                            ->call();
-
-                        $orderDetailsResponse = $request->getResponse();
-                        $io->info($orderDetailsResponse->getKey());
-                    } catch (ValidatorException $e) {
-                        $io->error('Bad request: ' . $e->getMessage());
-                        return Command::FAILURE;
-                    } catch (BadResponseException $e) {
-                        $io->error('API error: ' . $e->getResponse()->getMessage() . ' (' . $e->getResponse()->getCode() . ')');
-                        return Command::FAILURE;
-                    } catch (IntegrationApiException $e) {
-                        $io->error('Error: ' . $e->getMessage());
-                        return Command::FAILURE;
-                    }
-                }
-                return Command::SUCCESS;
-                break;
-            default:
-                $io->error('Nieobsługiwane inventory');
-                return Command::FAILURE;
+        if (!empty($errors)) {
+            throw new \RuntimeException(implode("\n", $errors));
         }
     }
 }
